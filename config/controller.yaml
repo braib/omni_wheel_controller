@@ -1,0 +1,24 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 50  # Hz
+
+    omni_wheel_controller:
+      type: omni_wheel_controller/OmniController
+
+omni_wheel_controller:
+  ros__parameters:
+    wheel_joints: ["wheel1", "wheel2", "wheel3"]
+    wheel_radius: 0.05
+    center_to_wheel: 0.15
+    max_wheel_rad_s: 50.0
+    cmd_topic: "/cmd_vel"
+    cmd_timeout_ms: 500
+    base_rotation_deg: 0.0
+    wheel_spacing_deg: 120.0
+    
+    # Odometry and TF parameters
+    odom_frame: "odom"
+    base_frame: "base_link"
+    cov_x: 0.001
+    cov_y: 0.001
+    cov_yaw: 0.001
