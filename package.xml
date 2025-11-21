@@ -7,21 +7,38 @@
   <maintainer email="you@example.com">You</maintainer>
   <license>Apache-2.0</license>
 
+  <!-- Build tool (required) -->
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>rclcpp_lifecycle</depend>
-  <depend>controller_interface</depend>
-  <depend>hardware_interface</depend>
-  <depend>pluginlib</depend>
+  <!-- Build-time dependencies (needed to compile/link this package) -->
+  <build_depend>rclcpp</build_depend>
+  <build_depend>rclcpp_lifecycle</build_depend>
+  <build_depend>controller_interface</build_depend>
+  <build_depend>hardware_interface</build_depend>
+  <build_depend>pluginlib</build_depend>
+  <build_depend>rcutils</build_depend>
+
+  <!-- Runtime / execution dependencies (needed when running the package, e.g. by launch files) -->
+  <exec_depend>rclcpp</exec_depend>
+  <exec_depend>rclcpp_lifecycle</exec_depend>
+  <exec_depend>controller_interface</exec_depend>
+  <exec_depend>hardware_interface</exec_depend>
+  <exec_depend>pluginlib</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+
+  <depend>realtime_tools</depend>
+  
+  <!-- Message dependencies -->
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
 
+  <!-- Optional: test / lint dependencies -->
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
+  <!-- Export plugin description so pluginlib/controller_manager can discover this plugin at runtime -->
   <export>
     <build_type>ament_cmake</build_type>
     <controller_interface plugin="${prefix}/plugin_description.xml"/>

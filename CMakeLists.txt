@@ -1,10 +1,7 @@
 cmake_minimum_required(VERSION 3.8)
 project(omni_wheel_controller)
 
-if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 17)
-endif()
-
+# Compiler settings
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -16,32 +13,16 @@ find_package(rclcpp_lifecycle REQUIRED)
 find_package(controller_interface REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
+find_package(rcutils REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(realtime_tools REQUIRED)
 
-# Include directories
-include_directories(include)
-
-# Create the controller library as SHARED
+# Create the controller library
 add_library(${PROJECT_NAME} SHARED
-  src/omni_controller.cpp
-  src/kinematics.cpp
-  src/odom_integrator.cpp
-)
-
-# Specify dependencies for the library
-ament_target_dependencies(${PROJECT_NAME}
-  rclcpp
-  rclcpp_lifecycle
-  controller_interface
-  hardware_interface
-  pluginlib
-  geometry_msgs
-  nav_msgs
-  tf2
-  tf2_ros
+  src/omni_wheel_controller.cpp
 )
 
 # Specify include directories
@@ -50,10 +31,22 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-# This makes the library position independent (required for shared libraries)
-target_compile_options(${PROJECT_NAME} PRIVATE -fPIC)
+# Link dependencies
+ament_target_dependencies(${PROJECT_NAME}
+  rclcpp
+  rclcpp_lifecycle
+  controller_interface
+  hardware_interface
+  pluginlib
+  rcutils
+  geometry_msgs
+  nav_msgs
+  tf2
+  tf2_ros
+  realtime_tools
+)
 
-# Export the plugin
+# Export plugin description so controller_manager/pluginlib can find the plugin XML after install
 pluginlib_export_plugin_description_file(controller_interface plugin_description.xml)
 
 # Install the library
@@ -64,27 +57,26 @@ install(TARGETS ${PROJECT_NAME}
   RUNTIME DESTINATION bin
 )
 
-# Install include directory
+
+# Install header files
 install(DIRECTORY include/
   DESTINATION include
 )
 
-# Install config files
+# Install config files (optional)
 install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME}
+  OPTIONAL
 )
 
-# Install launch files
+# Install launch files (optional)
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
+  OPTIONAL
 )
 
-# Install plugin description
-install(FILES plugin_description.xml
-  DESTINATION share/${PROJECT_NAME}
-)
 
-# Export dependencies
+# Export information
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   rclcpp
@@ -92,10 +84,18 @@ ament_export_dependencies(
   controller_interface
   hardware_interface
   pluginlib
+  rcutils
   geometry_msgs
   nav_msgs
   tf2
   tf2_ros
+  realtime_tools
 )
+
+# Testing
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  ament_lint_auto_find_test_dependencies()
+endif()
 
 ament_package()

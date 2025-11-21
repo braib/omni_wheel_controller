@@ -125,3 +125,72 @@ Adjust covariance parameters (`cov_x`, `cov_y`, `cov_yaw`) based on your robot's
 ## License
 
 Apache-2.0
+
+
+
+
+
+
+
+
+
+
+
+ros2 control list_controllers
+
+
+ros2 control load_controller my_joint_controller
+
+
+ros2 control load_controller my_controller --set-state configure
+
+
+ros2 control set_controller_state <controller_name> <target_state>
+
+ros2 control set_controller_state my_controller configure
+ros2 control set_controller_state my_controller start
+ros2 control set_controller_state my_controller stop
+
+
+
+
+
+
+
+# Quick Reference Cheat Sheet
+## View everything
+ros2 control list_controllers
+ros2 control list_hardware_interfaces
+ros2 control list_controller_types
+
+## Controller lifecycle
+ros2 control load_controller NAME
+ros2 control set_controller_state NAME configure
+ros2 control set_controller_state NAME start
+ros2 control set_controller_state NAME stop
+ros2 control set_controller_state NAME cleanup
+ros2 control unload_controller NAME
+
+## Hot-swap
+ros2 control switch_controllers --activate NEW --deactivate OLD
+
+## Development
+ros2 control reload_controller_libraries
+
+
+
+
+
+
+
+
+
+
+## List controllers
+ros2 service call /controller_manager/list_controllers controller_manager_msgs/srv/ListControllers
+
+## Load controller
+ros2 service call /controller_manager/load_controller controller_manager_msgs/srv/LoadController "{name: 'my_controller'}"
+
+## Switch controllers
+ros2 service call /controller_manager/switch_controller controller_manager_msgs/srv/SwitchController "{activate_controllers: ['controller1'], deactivate_controllers: ['controller2']}"

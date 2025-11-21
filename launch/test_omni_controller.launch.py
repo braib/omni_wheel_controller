@@ -1,83 +1,134 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, RegisterEventHandler
+from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
-from launch.actions import TimerAction
-import os
-from ament_index_python.packages import get_package_share_directory
+from launch_ros.substitutions import FindPackageShare
+
 
 def generate_launch_description():
-    # Minimal robot description with mock hardware for 3 omni wheels
-    robot_description_content = """<?xml version="1.0"?>
-<robot name="test_omni_robot">
-  <ros2_control name="OmniSystem" type="system">
-    <hardware>
-      <plugin>mock_components/GenericSystem</plugin>
-      <param name="fake_sensor_commands">false</param>
-      <param name="state_following_offset">0.0</param>
-    </hardware>
-    
-    <joint name="wheel1">
-      <command_interface name="velocity">
-        <param name="min">-50</param>
-        <param name="max">50</param>
-      </command_interface>
-      <state_interface name="velocity"/>
-      <state_interface name="position"/>
-    </joint>
-    
-    <joint name="wheel2">
-      <command_interface name="velocity">
-        <param name="min">-50</param>
-        <param name="max">50</param>
-      </command_interface>
-      <state_interface name="velocity"/>
-      <state_interface name="position"/>
-    </joint>
-    
-    <joint name="wheel3">
-      <command_interface name="velocity">
-        <param name="min">-50</param>
-        <param name="max">50</param>
-      </command_interface>
-      <state_interface name="velocity"/>
-      <state_interface name="position"/>
-    </joint>
-  </ros2_control>
-</robot>
-"""
-    
-    # Get controller config file path
-    pkg_share = get_package_share_directory('omni_wheel_controller')
-    controller_config = os.path.join(pkg_share, 'config', 'controller.yaml')
-    
-    # Controller manager node with robot description and controller config
-    controller_manager_node = Node(
-        package='controller_manager',
-        executable='ros2_control_node',
-        parameters=[
-            {'robot_description': robot_description_content},
-            controller_config
+    # Declare arguments
+    declared_arguments = []
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "use_sim_time",
+            default_value="false",
+            description="Use simulation (Gazebo) clock if true",
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "gui",
+            default_value="true",
+            description="Start RViz2 automatically with this launch file.",
+        )
+    )
+
+    # Initialize Arguments
+    use_sim_time = LaunchConfiguration("use_sim_time")
+    gui = LaunchConfiguration("gui")
+
+    # Get URDF via xacro
+    robot_description_content = Command(
+        [
+            PathJoinSubstitution([FindExecutable(name="xacro")]),
+            " ",
+            PathJoinSubstitution(
+                [FindPackageShare("lekiwi_description"), "urdf", "lekiwi.urdf.xacro"]
+            ),
+            " ",
+            "robot_name:=",
+            "",
+            " ",
+            "use_ros2_control:=",
+            "true",
+            " ",
+            "use_ignition:=",
+            "false",
+            " ",
+            "use_hardware:=",
+            "false",
+            " ",
+            "use_sim_time:=",
+            use_sim_time,
+        ]
+    )
+    robot_description = {"robot_description": robot_description_content}
+
+    # Controller configuration
+    robot_controllers = PathJoinSubstitution(
+        [
+            FindPackageShare("lekiwi_control"),
+            "config",
+            "lekiwi_controllers.yaml",
+        ]
+    )
+
+    # Controller Manager Node
+    control_node = Node(
+        package="controller_manager",
+        executable="ros2_control_node",
+        parameters=[robot_description, robot_controllers],
+        output="both",
+        remappings=[
+            ("/controller_manager/robot_description", "/robot_description"),
         ],
-        output='screen',
-        emulate_tty=True,
     )
-    
-    # Spawn the omni wheel controller after a short delay
-    spawn_controller = Node(
-        package='controller_manager',
-        executable='spawner',
-        arguments=['omni_wheel_controller'],
-        output='screen',
+
+    # Robot State Publisher
+    robot_state_pub_node = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        output="both",
+        parameters=[robot_description, {"use_sim_time": use_sim_time}],
     )
-    
-    # Delay spawner to let controller_manager initialize
-    delayed_spawn = TimerAction(
-        period=2.0,
-        actions=[spawn_controller]
+
+    # RViz
+    rviz_config_file = PathJoinSubstitution(
+        [FindPackageShare("lekiwi_description"), "rviz", "display.rviz"]
     )
-    
-    return LaunchDescription([
-        controller_manager_node,
-        delayed_spawn,
-    ])
+    rviz_node = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        output="log",
+        arguments=["-d", rviz_config_file],
+        condition=IfCondition(gui),
+        parameters=[{"use_sim_time": use_sim_time}],
+    )
+
+    # Joint State Broadcaster Spawner
+    joint_state_broadcaster_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
+    )
+
+    # Omni Wheel Controller Spawner
+    omni_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["omni_wheel_controller", "--controller-manager", "/controller_manager"],
+    )
+
+
+    # Delay omni controller start after joint_state_broadcaster
+    delay_omni_controller_spawner_after_joint_state_broadcaster_spawner = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=joint_state_broadcaster_spawner,
+            on_exit=[omni_controller_spawner],
+        )
+    )
+
+    nodes = [
+        control_node,
+        robot_state_pub_node,
+        rviz_node,
+        joint_state_broadcaster_spawner,
+        delay_omni_controller_spawner_after_joint_state_broadcaster_spawner,
+    ]
+
+    return LaunchDescription(declared_arguments + nodes)
