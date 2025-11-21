@@ -39,3 +39,7 @@ omni_wheel_controller:
     # Command velocity timeout (seconds)
     # Robot will stop if no cmd_vel received within this time
     cmd_vel_timeout: 0.5
+
+    linear_acceleration_limit: 1.0      # m/s² - adjust based on your robot
+    angular_acceleration_limit: 2.0     # rad/s² - adjust based on your robot  
+    velocity_smoothing_alpha: 0.3       # 0-1, lower = smoother (try 0.2-0.4)

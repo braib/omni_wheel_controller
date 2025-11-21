@@ -27,10 +27,12 @@ public:
 
   controller_interface::InterfaceConfiguration command_interface_configuration() const override;
   controller_interface::InterfaceConfiguration state_interface_configuration() const override;
+
   controller_interface::CallbackReturn on_init() override;
   controller_interface::CallbackReturn on_configure(const rclcpp_lifecycle::State & previous_state) override;
   controller_interface::CallbackReturn on_activate(const rclcpp_lifecycle::State & previous_state) override;
   controller_interface::CallbackReturn on_deactivate(const rclcpp_lifecycle::State & previous_state) override;
+
   controller_interface::return_type update(
     const rclcpp::Time & time,
     const rclcpp::Duration & period) override;
@@ -49,6 +51,11 @@ private:
   std::string cmd_vel_topic_;
   std::string odom_topic_;
   double cmd_vel_timeout_;        // Timeout for velocity commands
+  
+  // Smoothing parameters
+  double linear_acceleration_limit_;   // m/s²
+  double angular_acceleration_limit_;  // rad/s²
+  double velocity_smoothing_alpha_;    // Exponential smoothing factor (0-1)
 
   // Command velocity subscriber
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
@@ -78,6 +85,14 @@ private:
   double omega_z_;
   std::vector<double> prev_wheel_positions_;
   rclcpp::Time prev_time_;
+  
+  // Velocity smoothing state
+  double target_vx_;      // Target velocity from cmd_vel
+  double target_vy_;
+  double target_omega_z_;
+  double current_vx_;     // Smoothed current velocity sent to wheels
+  double current_vy_;
+  double current_omega_z_;
 
   // Helper methods
   void cmd_vel_callback(const std::shared_ptr<geometry_msgs::msg::Twist> msg);
@@ -86,6 +101,10 @@ private:
   void publish_odometry(const rclcpp::Time & time);
   void publish_transform(const rclcpp::Time & time);
   bool is_cmd_vel_timeout(const rclcpp::Time & current_time);
+  
+  // Smoothing methods
+  void apply_acceleration_limits(double dt);
+  void apply_velocity_smoothing();
 };
 
 }  // namespace omni_wheel_controller

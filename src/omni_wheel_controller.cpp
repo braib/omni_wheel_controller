@@ -24,12 +24,21 @@ OmniWheelController::OmniWheelController()
   cmd_vel_topic_("~/cmd_vel"),
   odom_topic_("~/odom"),
   cmd_vel_timeout_(0.5),
+  linear_acceleration_limit_(1.0),
+  angular_acceleration_limit_(2.0),
+  velocity_smoothing_alpha_(0.3),
   x_(0.0),
   y_(0.0),
   theta_(0.0),
   vx_(0.0),
   vy_(0.0),
-  omega_z_(0.0)
+  omega_z_(0.0),
+  target_vx_(0.0),
+  target_vy_(0.0),
+  target_omega_z_(0.0),
+  current_vx_(0.0),
+  current_vy_(0.0),
+  current_omega_z_(0.0)
 {
 }
 
@@ -50,6 +59,11 @@ controller_interface::CallbackReturn OmniWheelController::on_init()
     auto_declare<std::string>("cmd_vel_topic", "~/cmd_vel");
     auto_declare<std::string>("odom_topic", "~/odom");
     auto_declare<double>("cmd_vel_timeout", 0.5);
+    
+    // New smoothing parameters
+    auto_declare<double>("linear_acceleration_limit", 1.0);  // m/s²
+    auto_declare<double>("angular_acceleration_limit", 2.0); // rad/s²
+    auto_declare<double>("velocity_smoothing_alpha", 0.3);   // 0-1, lower = smoother
   }
   catch (const std::exception & e)
   {
@@ -78,6 +92,11 @@ controller_interface::CallbackReturn OmniWheelController::on_configure(
   cmd_vel_topic_ = get_node()->get_parameter("cmd_vel_topic").as_string();
   odom_topic_ = get_node()->get_parameter("odom_topic").as_string();
   cmd_vel_timeout_ = get_node()->get_parameter("cmd_vel_timeout").as_double();
+  
+  // Read smoothing parameters
+  linear_acceleration_limit_ = get_node()->get_parameter("linear_acceleration_limit").as_double();
+  angular_acceleration_limit_ = get_node()->get_parameter("angular_acceleration_limit").as_double();
+  velocity_smoothing_alpha_ = get_node()->get_parameter("velocity_smoothing_alpha").as_double();
 
   // Validate parameters
   if (wheel_joints_.empty())
@@ -133,8 +152,9 @@ controller_interface::CallbackReturn OmniWheelController::on_configure(
   RCLCPP_INFO(get_node()->get_logger(), "  wheel_joints: %zu", wheel_joints_.size());
   RCLCPP_INFO(get_node()->get_logger(), "  wheel_radius: %.3f m", wheel_radius_);
   RCLCPP_INFO(get_node()->get_logger(), "  wheel_base_radius: %.3f m", wheel_base_radius_);
-  RCLCPP_INFO(get_node()->get_logger(), "  cmd_vel_topic: %s", cmd_vel_topic_.c_str());
-  RCLCPP_INFO(get_node()->get_logger(), "  odom_topic: %s", odom_topic_.c_str());
+  RCLCPP_INFO(get_node()->get_logger(), "  linear_acceleration_limit: %.2f m/s²", linear_acceleration_limit_);
+  RCLCPP_INFO(get_node()->get_logger(), "  angular_acceleration_limit: %.2f rad/s²", angular_acceleration_limit_);
+  RCLCPP_INFO(get_node()->get_logger(), "  velocity_smoothing_alpha: %.2f", velocity_smoothing_alpha_);
   
   return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -214,6 +234,14 @@ controller_interface::CallbackReturn OmniWheelController::on_activate(
   vy_ = 0.0;
   omega_z_ = 0.0;
   
+  // Initialize smoothed velocities
+  target_vx_ = 0.0;
+  target_vy_ = 0.0;
+  target_omega_z_ = 0.0;
+  current_vx_ = 0.0;
+  current_vy_ = 0.0;
+  current_omega_z_ = 0.0;
+  
   for (size_t i = 0; i < wheel_position_state_interfaces_.size(); ++i)
   {
     prev_wheel_positions_[i] = wheel_position_state_interfaces_[i].get().get_value();
@@ -244,30 +272,40 @@ controller_interface::CallbackReturn OmniWheelController::on_deactivate(
 
 controller_interface::return_type OmniWheelController::update(
   const rclcpp::Time & time,
-  const rclcpp::Duration & /*period*/)
+  const rclcpp::Duration & period)
 {
+  double dt = period.seconds();
+  if (dt <= 0.0)
+  {
+    return controller_interface::return_type::OK;
+  }
+
   // Get latest cmd_vel
   auto cmd_vel = *cmd_vel_buffer_.readFromRT();
-  
-  double vx = 0.0, vy = 0.0, omega_z = 0.0;
   
   // Check if we have a valid command and it hasn't timed out
   if (cmd_vel && !is_cmd_vel_timeout(time))
   {
-    vx = cmd_vel->linear.x;
-    vy = cmd_vel->linear.y;
-    omega_z = cmd_vel->angular.z;
+    target_vx_ = cmd_vel->linear.x;
+    target_vy_ = cmd_vel->linear.y;
+    target_omega_z_ = cmd_vel->angular.z;
   }
   else
   {
-    // If timeout or no command, stop the robot
-    vx = 0.0;
-    vy = 0.0;
-    omega_z = 0.0;
+    // If timeout or no command, target is zero
+    target_vx_ = 0.0;
+    target_vy_ = 0.0;
+    target_omega_z_ = 0.0;
   }
 
-  // Compute wheel velocities using the kinematic model
-  auto wheel_velocities = compute_wheel_velocities(vx, vy, omega_z);
+  // Apply acceleration limits
+  apply_acceleration_limits(dt);
+  
+  // Apply exponential smoothing filter
+  apply_velocity_smoothing();
+
+  // Compute wheel velocities using smoothed current velocities
+  auto wheel_velocities = compute_wheel_velocities(current_vx_, current_vy_, current_omega_z_);
 
   // Send commands to wheels
   for (size_t i = 0; i < wheel_velocity_command_interfaces_.size(); ++i)
@@ -304,14 +342,53 @@ bool OmniWheelController::is_cmd_vel_timeout(const rclcpp::Time & current_time)
   return time_since_last_cmd > cmd_vel_timeout_;
 }
 
+void OmniWheelController::apply_acceleration_limits(double dt)
+{
+  // Calculate desired velocity changes
+  double delta_vx = target_vx_ - current_vx_;
+  double delta_vy = target_vy_ - current_vy_;
+  double delta_omega = target_omega_z_ - current_omega_z_;
+  
+  // Calculate linear acceleration magnitude
+  double linear_accel = std::sqrt(delta_vx * delta_vx + delta_vy * delta_vy) / dt;
+  
+  // Limit linear acceleration
+  if (linear_accel > linear_acceleration_limit_)
+  {
+    double scale = (linear_acceleration_limit_ * dt) / std::sqrt(delta_vx * delta_vx + delta_vy * delta_vy);
+    delta_vx *= scale;
+    delta_vy *= scale;
+  }
+  
+  // Limit angular acceleration
+  double max_delta_omega = angular_acceleration_limit_ * dt;
+  if (std::abs(delta_omega) > max_delta_omega)
+  {
+    delta_omega = std::copysign(max_delta_omega, delta_omega);
+  }
+  
+  // Apply limited changes
+  current_vx_ += delta_vx;
+  current_vy_ += delta_vy;
+  current_omega_z_ += delta_omega;
+}
+
+void OmniWheelController::apply_velocity_smoothing()
+{
+  // Exponential smoothing: output = alpha * input + (1 - alpha) * previous_output
+  // Lower alpha = smoother but slower response
+  current_vx_ = velocity_smoothing_alpha_ * current_vx_ + 
+                (1.0 - velocity_smoothing_alpha_) * target_vx_;
+  current_vy_ = velocity_smoothing_alpha_ * current_vy_ + 
+                (1.0 - velocity_smoothing_alpha_) * target_vy_;
+  current_omega_z_ = velocity_smoothing_alpha_ * current_omega_z_ + 
+                     (1.0 - velocity_smoothing_alpha_) * target_omega_z_;
+}
+
 std::vector<double> OmniWheelController::compute_wheel_velocities(
   double vx, double vy, double omega_z)
 {
   std::vector<double> wheel_vels(wheel_joints_.size());
-  
-  // Apply the kinematic formula for each wheel:
-  // omega_i = (1/a) * (u*cos(theta_Bi) + v*sin(theta_Bi) + r*l*sin(theta_Bi - alpha_i))
-  // where: u = vx, v = vy, r = omega_z, a = wheel_radius, l = wheel_base_radius
   
   for (size_t i = 0; i < wheel_joints_.size(); ++i)
   {
@@ -328,33 +405,22 @@ std::vector<double> OmniWheelController::compute_wheel_velocities(
 
 void OmniWheelController::update_odometry(const rclcpp::Time & time)
 {
-  // Compute dt
   double dt = (time - prev_time_).seconds();
   if (dt <= 0.0)
   {
     return;
   }
 
-  // Read current wheel positions and compute wheel angular velocities
   std::vector<double> wheel_ang_vels(wheel_joints_.size());
   
   for (size_t i = 0; i < wheel_position_state_interfaces_.size(); ++i)
   {
     double curr_pos = wheel_position_state_interfaces_[i].get().get_value();
     double delta_pos = curr_pos - prev_wheel_positions_[i];
-    wheel_ang_vels[i] = delta_pos / dt;  // Angular velocity (rad/s)
+    wheel_ang_vels[i] = delta_pos / dt;
     prev_wheel_positions_[i] = curr_pos;
   }
 
-  // Inverse kinematics: compute robot velocities from wheel angular velocities
-  // ω = J · V / a  =>  V = a · J⁺ · ω
-  // where J is the Jacobian matrix and J⁺ is its pseudo-inverse
-  
-  // Build Jacobian matrix J (3x3 for 3 wheels)
-  // J[i][0] = cos(θ_Bi)
-  // J[i][1] = sin(θ_Bi)  
-  // J[i][2] = l·sin(θ_Bi - α_i)
-  
   double J[3][3];
   for (size_t i = 0; i < 3; ++i)
   {
@@ -363,7 +429,6 @@ void OmniWheelController::update_odometry(const rclcpp::Time & time)
     J[i][2] = wheel_base_radius_ * std::sin(theta_B_[i] - alpha_[i]);
   }
   
-  // Compute J^T · J
   double JtJ[3][3] = {{0}};
   for (int i = 0; i < 3; ++i)
   {
@@ -376,7 +441,6 @@ void OmniWheelController::update_odometry(const rclcpp::Time & time)
     }
   }
   
-  // Compute inverse of (J^T · J) using 3x3 matrix inversion
   double det = JtJ[0][0] * (JtJ[1][1] * JtJ[2][2] - JtJ[1][2] * JtJ[2][1]) -
                JtJ[0][1] * (JtJ[1][0] * JtJ[2][2] - JtJ[1][2] * JtJ[2][0]) +
                JtJ[0][2] * (JtJ[1][0] * JtJ[2][1] - JtJ[1][1] * JtJ[2][0]);
@@ -400,7 +464,6 @@ void OmniWheelController::update_odometry(const rclcpp::Time & time)
   inv_JtJ[2][1] = (JtJ[0][1] * JtJ[2][0] - JtJ[0][0] * JtJ[2][1]) / det;
   inv_JtJ[2][2] = (JtJ[0][0] * JtJ[1][1] - JtJ[0][1] * JtJ[1][0]) / det;
   
-  // Compute J⁺ = (J^T · J)^(-1) · J^T
   double J_pinv[3][3];
   for (int i = 0; i < 3; ++i)
   {
@@ -414,7 +477,6 @@ void OmniWheelController::update_odometry(const rclcpp::Time & time)
     }
   }
   
-  // Compute robot velocities: V = a · J⁺ · ω
   vx_ = 0.0;
   vy_ = 0.0;
   omega_z_ = 0.0;
@@ -428,7 +490,6 @@ void OmniWheelController::update_odometry(const rclcpp::Time & time)
   vy_ *= wheel_radius_;
   omega_z_ *= wheel_radius_;
 
-  // Update robot pose in odometry frame
   double delta_x = (vx_ * std::cos(theta_) - vy_ * std::sin(theta_)) * dt;
   double delta_y = (vx_ * std::sin(theta_) + vy_ * std::cos(theta_)) * dt;
   double delta_theta = omega_z_ * dt;
@@ -437,7 +498,6 @@ void OmniWheelController::update_odometry(const rclcpp::Time & time)
   y_ += delta_y;
   theta_ += delta_theta;
 
-  // Normalize theta to [-pi, pi]
   while (theta_ > M_PI) theta_ -= 2.0 * M_PI;
   while (theta_ < -M_PI) theta_ += 2.0 * M_PI;
 
@@ -454,12 +514,10 @@ void OmniWheelController::publish_odometry(const rclcpp::Time & time)
     odom_msg.header.frame_id = odom_frame_id_;
     odom_msg.child_frame_id = base_frame_id_;
 
-    // Position
     odom_msg.pose.pose.position.x = x_;
     odom_msg.pose.pose.position.y = y_;
     odom_msg.pose.pose.position.z = 0.0;
 
-    // Orientation (quaternion from theta)
     tf2::Quaternion q;
     q.setRPY(0.0, 0.0, theta_);
     odom_msg.pose.pose.orientation.x = q.x();
@@ -467,7 +525,6 @@ void OmniWheelController::publish_odometry(const rclcpp::Time & time)
     odom_msg.pose.pose.orientation.z = q.z();
     odom_msg.pose.pose.orientation.w = q.w();
 
-    // Velocity (in base_link frame)
     odom_msg.twist.twist.linear.x = vx_;
     odom_msg.twist.twist.linear.y = vy_;
     odom_msg.twist.twist.angular.z = omega_z_;
